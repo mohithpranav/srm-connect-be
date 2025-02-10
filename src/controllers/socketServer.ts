@@ -1,57 +1,168 @@
-import { Server } from "socket.io";
+import { WebSocket, WebSocketServer } from "ws";
 import { Server as HttpServer } from "http";
 import { PrismaClient } from "@prisma/client";
 
+interface CustomWebSocket extends WebSocket {
+  isAlive: boolean;
+  userId?: number;
+}
+
 const prisma = new PrismaClient();
-const onlineUsers = new Map<number, string>();
+const onlineUsers = new Map<number, CustomWebSocket>();
 
 const initializeSocketServer = (server: HttpServer) => {
-  const io = new Server(server, {
-    cors: { origin: "*" },
-  });
+  const wss = new WebSocketServer({ server });
 
-  io.on("connection", (socket) => {
-    console.log("A user connected:", socket.id);
+  wss.on("connection", (ws: CustomWebSocket) => {
+    console.log("🔌 New client connected");
 
-    const logOnlineUsers = () => {
-      console.log("📊 Online users:", Array.from(onlineUsers.entries()));
-    };
-
-    // Handle user coming online
-    socket.on("user-online", async (userId: number) => {
-      console.log(`👤 User ${userId} coming online with socket ${socket.id}`);
-      onlineUsers.set(userId, socket.id);
-      await prisma.student.update({
-        where: { id: userId },
-        data: { isOnline: true },
-      });
-
-      // Notify connected users about online status
-      socket.broadcast.emit("user-status-changed", { userId, isOnline: true });
-      logOnlineUsers();
+    // Add ping-pong to keep connection alive
+    ws.isAlive = true;
+    ws.on("pong", () => {
+      ws.isAlive = true;
     });
 
-    // Handle message sending
-    socket.on("send-message", async ({ senderId, receiverId, content }) => {
-      console.log(`📨 Message from ${senderId} to ${receiverId}: ${content}`);
+    ws.on("message", async (message: string) => {
       try {
-        // Verify connection exists
-        const connection = await prisma.connection.findFirst({
-          where: {
-            OR: [
-              { requesterId: senderId, recipientId: receiverId },
-              { requesterId: receiverId, recipientId: senderId },
-            ],
-            status: "ACCEPTED",
-          },
-        });
+        const data = JSON.parse(message.toString());
+        console.log("📥 Received:", data);
 
-        if (!connection) {
-          console.log("❌ No active connection found between users");
-          socket.emit("error", "No active connection found");
-          return;
+        switch (data.type) {
+          case "user-online":
+            await handleUserOnline(ws, data.userId);
+            break;
+
+          case "send-message":
+            await handleSendMessage(ws, data);
+            break;
+
+          case "mark-messages-read":
+            await handleMarkMessagesRead(data);
+            break;
+
+          case "fetch-chat-history":
+            await handleFetchChatHistory(ws, data);
+            break;
+
+          case "get-notifications":
+            await handleGetNotifications(ws, data.userId);
+            break;
+
+          default:
+            console.log("⚠️ Unknown message type:", data.type);
         }
+      } catch (error) {
+        console.error("❌ Error processing message:", error);
+        ws.send(
+          JSON.stringify({ type: "error", message: "Invalid message format" })
+        );
+      }
+    });
 
+    ws.on("close", () => {
+      console.log("🔌 Client disconnected");
+      handleUserDisconnect(ws);
+    });
+
+    ws.on("error", (error) => {
+      console.error("🔌 WebSocket error:", error);
+    });
+  });
+
+  // Keep connections alive with ping-pong
+  const interval = setInterval(() => {
+    wss.clients.forEach((client) => {
+      const ws = client as CustomWebSocket;
+      if (!ws.isAlive) {
+        console.log("🔌 Terminating inactive connection");
+        return ws.terminate();
+      }
+
+      ws.isAlive = false;
+      ws.ping();
+    });
+  }, 30000);
+
+  wss.on("close", () => {
+    clearInterval(interval);
+  });
+};
+
+async function handleUserOnline(ws: CustomWebSocket, userId: number) {
+  try {
+    console.log(`👤 User ${userId} coming online`);
+
+    // Store the WebSocket connection with the userId
+    onlineUsers.set(userId, ws);
+
+    // Store userId in WebSocket instance for easy reference
+    ws.userId = userId;
+
+    await prisma.student.update({
+      where: { id: userId },
+      data: { isOnline: true },
+    });
+
+    broadcastUserStatus(userId, true);
+    console.log("📊 Current online users:", Array.from(onlineUsers.keys()));
+
+    // Send confirmation to the user
+    ws.send(
+      JSON.stringify({
+        type: "connection-success",
+        userId: userId,
+      })
+    );
+  } catch (error) {
+    console.error("❌ Error in handleUserOnline:", error);
+  }
+}
+
+async function handleSendMessage(ws: CustomWebSocket, data: any) {
+  try {
+    const { senderId, receiverId, content } = data;
+    console.log(`📨 Processing message from ${senderId} to ${receiverId}`);
+
+    // Verify both users exist
+    const [sender, receiver] = await Promise.all([
+      prisma.student.findUnique({ where: { id: senderId } }),
+      prisma.student.findUnique({ where: { id: receiverId } }),
+    ]);
+
+    if (!sender || !receiver) {
+      ws.send(
+        JSON.stringify({
+          type: "error",
+          message: !sender ? "Sender not found" : "Receiver not found",
+        })
+      );
+      return;
+    }
+
+    // Verify connection exists
+    const connection = await prisma.connection.findFirst({
+      where: {
+        OR: [
+          { requesterId: senderId, recipientId: receiverId },
+          { requesterId: receiverId, recipientId: senderId },
+        ],
+        status: "ACCEPTED",
+      },
+    });
+
+    if (!connection) {
+      ws.send(
+        JSON.stringify({
+          type: "error",
+          message: "No active connection found",
+        })
+      );
+      return;
+    }
+
+    // Save message and update notification in a transaction
+    const [message, notification] = await prisma.$transaction(
+      async (prisma) => {
         // Create message
         const message = await prisma.message.create({
           data: {
@@ -70,75 +181,252 @@ const initializeSocketServer = (server: HttpServer) => {
           },
         });
 
-        console.log("✅ Message saved to database:", message);
-        console.log("✅ Message sent confirmation emitted to sender");
-
-        // Send to sender
-        socket.emit("message-sent", message);
-
-        // Send to receiver if online
-        const receiverSocket = onlineUsers.get(receiverId);
-        if (receiverSocket) {
-          io.to(receiverSocket).emit("new-message", message);
-          console.log(
-            `✅ Message delivered to receiver socket ${receiverSocket}`
-          );
-        } else {
-          console.log(
-            `ℹ️ Receiver ${receiverId} is offline, message saved only`
-          );
-        }
-      } catch (error) {
-        console.error("Message sending error:", error);
-        socket.emit("error", "Failed to send message");
-      }
-    });
-
-    // Handle message read status
-    socket.on("mark-messages-read", async ({ userId, senderId }) => {
-      try {
-        await prisma.message.updateMany({
+        // Update or create notification
+        const notification = await prisma.notification.upsert({
           where: {
-            receiverId: userId,
-            senderId: senderId,
-            isRead: false,
+            studentId_senderId: {
+              studentId: receiverId,
+              senderId: senderId,
+            },
           },
-          data: {
-            isRead: true,
-            readAt: new Date(),
+          update: {
+            count: { increment: 1 },
+            lastMessage: new Date(),
+          },
+          create: {
+            studentId: receiverId,
+            senderId: senderId,
+            count: 1,
+            lastMessage: new Date(),
           },
         });
 
-        // Notify sender that messages were read
-        const senderSocket = onlineUsers.get(senderId);
-        if (senderSocket) {
-          io.to(senderSocket).emit("messages-read", { by: userId });
-        }
+        return [message, notification];
+      }
+    );
+
+    // Prepare message payload
+    const messagePayload = JSON.stringify({
+      type: "new-message",
+      message: {
+        ...message,
+        timestamp: new Date().toISOString(),
+      },
+    });
+
+    // Send to sender (confirmation)
+    ws.send(
+      JSON.stringify({
+        type: "message-sent",
+        message: {
+          ...message,
+          timestamp: new Date().toISOString(),
+        },
+      })
+    );
+    console.log(`✅ Message sent confirmation to sender ${senderId}`);
+
+    // Send to receiver if online
+    const receiverWs = onlineUsers.get(receiverId);
+    if (receiverWs && receiverWs.readyState === WebSocket.OPEN) {
+      try {
+        // Send new message to receiver
+        receiverWs.send(messagePayload);
+        console.log(`✅ Message delivered to receiver ${receiverId}`);
+
+        // Send notification update
+        receiverWs.send(
+          JSON.stringify({
+            type: "notification-update",
+            notification: {
+              senderId,
+              count: notification.count,
+              lastMessage: new Date().toISOString(),
+            },
+          })
+        );
+        console.log(`✅ Notification sent to receiver ${receiverId}`);
       } catch (error) {
-        console.error("Error marking messages as read:", error);
+        console.error(`❌ Error sending to receiver ${receiverId}:`, error);
+        onlineUsers.delete(receiverId);
       }
+    } else {
+      console.log(
+        `ℹ️ Receiver ${receiverId} is offline or connection is closed`
+      );
+    }
+
+    // Log the message delivery status
+    console.log(`📊 Message delivery status:
+      Sender (${senderId}): ✅ Delivered
+      Receiver (${receiverId}): ${receiverWs ? "✅ Delivered" : "❌ Offline"}
+    `);
+  } catch (error) {
+    console.error("❌ Error in handleSendMessage:", error);
+    ws.send(
+      JSON.stringify({
+        type: "error",
+        message: "Failed to send message",
+      })
+    );
+  }
+}
+
+async function handleFetchChatHistory(ws: CustomWebSocket, data: any) {
+  try {
+    const { userId, otherId } = data;
+
+    const messages = await prisma.message.findMany({
+      where: {
+        OR: [
+          { senderId: userId, receiverId: otherId },
+          { senderId: otherId, receiverId: userId },
+        ],
+      },
+      include: {
+        sender: {
+          select: {
+            username: true,
+            profilePic: true,
+          },
+        },
+      },
+      orderBy: {
+        createdAt: "asc",
+      },
     });
 
-    // Handle disconnection
-    socket.on("disconnect", async () => {
-      console.log(`🔌 Socket disconnected: ${socket.id}`);
-      for (const [userId, socketId] of onlineUsers.entries()) {
-        if (socketId === socket.id) {
-          onlineUsers.delete(userId);
-          await prisma.student.update({
-            where: { id: userId },
-            data: { isOnline: false },
-          });
+    ws.send(
+      JSON.stringify({
+        type: "chat-history",
+        messages,
+      })
+    );
+  } catch (error) {
+    console.error("❌ Error fetching chat history:", error);
+    ws.send(
+      JSON.stringify({
+        type: "error",
+        message: "Failed to fetch chat history",
+      })
+    );
+  }
+}
 
-          // Notify others about offline status
-          socket.broadcast.emit("user-status-changed", {
-            userId,
-            isOnline: false,
-          });
-        }
-      }
+async function handleMarkMessagesRead(data: any) {
+  try {
+    const { userId, senderId } = data;
+
+    // Update messages and clear notifications in a transaction
+    await prisma.$transaction(async (prisma) => {
+      // Mark messages as read
+      await prisma.message.updateMany({
+        where: {
+          receiverId: userId,
+          senderId: senderId,
+          isRead: false,
+        },
+        data: {
+          isRead: true,
+          readAt: new Date(),
+        },
+      });
+
+      // Clear notification for this sender
+      await prisma.notification.deleteMany({
+        where: {
+          studentId: userId,
+          senderId: senderId,
+        },
+      });
     });
+
+    // Notify the reader about cleared notifications
+    const readerWs = onlineUsers.get(userId);
+    if (readerWs) {
+      readerWs.send(
+        JSON.stringify({
+          type: "notifications-cleared",
+          senderId,
+        })
+      );
+    }
+
+    // Notify the sender that messages were read
+    const senderWs = onlineUsers.get(senderId);
+    if (senderWs) {
+      senderWs.send(
+        JSON.stringify({
+          type: "messages-read",
+          by: userId,
+        })
+      );
+    }
+  } catch (error) {
+    console.error("❌ Error in handleMarkMessagesRead:", error);
+  }
+}
+
+// Add a new function to get notification counts
+async function handleGetNotifications(ws: CustomWebSocket, userId: number) {
+  try {
+    const notifications = await prisma.notification.findMany({
+      where: {
+        studentId: userId,
+      },
+      include: {
+        student: {
+          select: {
+            username: true,
+            profilePic: true,
+          },
+        },
+      },
+    });
+
+    ws.send(
+      JSON.stringify({
+        type: "notifications",
+        notifications,
+      })
+    );
+  } catch (error) {
+    console.error("❌ Error fetching notifications:", error);
+    ws.send(
+      JSON.stringify({
+        type: "error",
+        message: "Failed to fetch notifications",
+      })
+    );
+  }
+}
+
+function handleUserDisconnect(ws: CustomWebSocket) {
+  for (const [userId, userWs] of onlineUsers.entries()) {
+    if (userWs === ws) {
+      onlineUsers.delete(userId);
+      broadcastUserStatus(userId, false);
+
+      prisma.student
+        .update({
+          where: { id: userId },
+          data: { isOnline: false },
+        })
+        .catch(console.error);
+    }
+  }
+}
+
+function broadcastUserStatus(userId: number, isOnline: boolean) {
+  const message = JSON.stringify({
+    type: "user-status-changed",
+    userId,
+    isOnline,
   });
-};
+
+  for (const ws of onlineUsers.values()) {
+    ws.send(message);
+  }
+}
 
 export default initializeSocketServer;

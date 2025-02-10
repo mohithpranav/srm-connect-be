@@ -39,6 +39,7 @@ model Student {
   sentConnection   Connection[]     @relation("RecipientConnections")
   sentMessage      Message[]        @relation("SenderMessages")
   receivedMessage  Message[]        @relation("ReceiverMessages")
+  notifications    Notification[]
 }
 
 model Post {
@@ -96,4 +97,15 @@ model Message {
   receiver         Student   @relation("ReceiverMessages", fields: [receiverId], references: [id])
   connectionId     Int?
   connectionMessage Connection? @relation(fields: [connectionId], references: [id])
+}
+
+model Notification {
+  id          Int      @id @default(autoincrement())
+  studentId   Int      // Receiver's ID
+  senderId    Int      // Sender's ID
+  count       Int      @default(0)
+  lastMessage DateTime @default(now())
+  student     Student  @relation(fields: [studentId], references: [id])
+
+  @@unique([studentId, senderId])
 }
