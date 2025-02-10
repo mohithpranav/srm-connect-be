@@ -1,0 +1,99 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Student {
+  id               Int              @id @default(autoincrement())
+  username         String           @unique
+  email            String           @unique
+  firstName        String?
+  lastName         String?
+  password         String
+  createdAt        DateTime         @default(now())
+  profilePic       String?
+  branch           String?
+  year             Int?
+  state            String?
+  skills           String[]        @default([])
+  interests        String[]        @default([])
+  language         String[]        @default([])
+  linkedinUrl      String?
+  githubUrl        String?
+  otp              String? 
+  isVerified       Boolean          @default(false)
+  isOnline         Boolean          @default(false)  // Online status
+  post             Post[]
+  comment          Comment[]
+  connection       Connection[]     @relation("RequesterConnections")
+  sentConnection   Connection[]     @relation("RecipientConnections")
+  sentMessage      Message[]        @relation("SenderMessages")
+  receivedMessage  Message[]        @relation("ReceiverMessages")
+}
+
+model Post {
+  id           Int      @id @default(autoincrement())
+  content      String
+  createdAt    DateTime @default(now())
+  studentId    Int
+  student      Student  @relation(fields: [studentId], references: [id])
+  comments     Comment[]
+}
+
+model Comment {
+  id                Int      @id @default(autoincrement())
+  content           String
+  createdAt         DateTime @default(now())
+  postId            Int
+  post              Post     @relation(fields: [postId], references: [id])
+  studentId         Int
+  student           Student  @relation(fields: [studentId], references: [id])
+  parentCommentId   Int?     // To enable replies to comments
+  parentComment     Comment? @relation("CommentReplies", fields: [parentCommentId], references: [id])
+  replies           Comment[] @relation("CommentReplies")
+}
+
+model Connection {
+  id            Int              @id @default(autoincrement())
+  requesterId   Int
+  recipientId   Int
+  status        ConnectionStatus
+  requestedAt   DateTime         @default(now())
+  acceptedAt    DateTime?
+
+  requester     Student          @relation("RequesterConnections", fields: [requesterId], references: [id])
+  recipient     Student          @relation("RecipientConnections", fields: [recipientId], references: [id])
+  messages      Message[]        
+
+  @@unique([requesterId, recipientId])  // Ensure uniqueness of the connection pair
+}
+
+enum ConnectionStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+}
+
+model Message {
+  id               Int       @id @default(autoincrement())
+  content          String
+  createdAt        DateTime  @default(now())
+  isRead           Boolean   @default(false)
+  readAt           DateTime?
+  senderId         Int
+  receiverId       Int
+  sender           Student   @relation("SenderMessages", fields: [senderId], references: [id])
+  receiver         Student   @relation("ReceiverMessages", fields: [receiverId], references: [id])
+  connectionId     Int?
+  connectionMessage Connection? @relation(fields: [connectionId], references: [id])
+}
