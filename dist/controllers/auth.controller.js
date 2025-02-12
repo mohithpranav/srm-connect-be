@@ -12,124 +12,317 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.resendOtp = exports.verifyOtpController = exports.signin = exports.signup = void 0;
+exports.resetPassword = exports.verifyResetOtp = exports.forgotPassword = exports.resendOtp = exports.verifyOtpController = exports.signin = exports.initiateSignup = void 0;
 const bcrypt_1 = __importDefault(require("bcrypt"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const client_1 = require("@prisma/client");
 const email_1 = require("../utils/email");
 const otp_1 = require("../utils/otp");
+const ioredis_1 = __importDefault(require("ioredis"));
 const prisma = new client_1.PrismaClient();
-// 📌 **Signup with OTP Email Verification**
-const signup = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+const redis = new ioredis_1.default();
+// Step 1: Store user data in Redis and send OTP
+const initiateSignup = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
-        const { email, password, username } = req.body;
+        const { firstName, lastName, email, password, username } = req.body;
+        // Validate required fields
+        if (!firstName || !lastName || !email || !password || !username) {
+            return res.status(400).json({
+                message: "All fields are required",
+            });
+        }
         // Check if user already exists
-        const existingUser = yield prisma.student.findUnique({ where: { email } });
+        const existingUser = yield prisma.student.findFirst({
+            where: {
+                OR: [{ email }, { username }],
+            },
+        });
         if (existingUser) {
-            return res.status(400).json({ message: "User already exists" });
+            return res.status(400).json({
+                message: existingUser.email === email
+                    ? "Email already registered"
+                    : "Username already taken",
+            });
         }
         const hashedPassword = yield bcrypt_1.default.hash(password, 10);
-        const newUser = yield prisma.student.create({
-            data: { email, username, password: hashedPassword },
-        });
-        // Generate OTP
-        const otp = yield (0, otp_1.generateOtp)(newUser.id);
-        // Send OTP via email
-        yield (0, email_1.sendEmail)(email, "Your OTP Code", `Your OTP is: ${otp}`);
+        // Store user data in Redis temporarily (10 minutes)
+        const userData = {
+            firstName,
+            lastName,
+            email,
+            username,
+            password: hashedPassword,
+        };
+        yield redis.set(`userData:${email}`, JSON.stringify(userData), "EX", 600);
+        // Generate and send OTP
+        const otp = yield (0, otp_1.generateOtp)(email);
+        yield (0, email_1.sendEmail)(email, "Verify Your Email", `Welcome to SRM Connect! Your verification code is: ${otp}`);
         return res.status(201).json({
-            message: "User created. Please verify OTP sent to your email.",
-            userId: newUser.id,
+            message: "Please verify your email to complete signup",
+            email,
         });
     }
     catch (error) {
+        console.error("Signup error:", error);
         return res.status(500).json({
             message: "Signup failed",
             error: error.message,
         });
     }
 });
-exports.signup = signup;
-// 📌 **Verify OTP and Activate Account**
+exports.initiateSignup = initiateSignup;
+// Step 2: Verify OTP and create user
 const verifyOtpController = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
-        const { userId, otp } = req.body;
-        const isValid = yield (0, otp_1.verifyOtp)(userId, otp);
-        if (!isValid) {
-            return res.status(400).json({ message: "Invalid OTP" });
+        const { email, otp } = req.body;
+        if (!email || !otp) {
+            return res.status(400).json({
+                message: "Email and OTP are required",
+            });
         }
-        // Activate user
-        yield prisma.student.update({
-            where: { id: userId },
-            data: { isVerified: true },
+        // Verify OTP
+        const isValid = yield (0, otp_1.verifyOtp)(email, otp);
+        if (!isValid) {
+            return res.status(400).json({
+                message: "Invalid or expired OTP",
+            });
+        }
+        // Get stored user data from Redis
+        const userDataString = yield redis.get(`userData:${email}`);
+        if (!userDataString) {
+            return res.status(400).json({
+                message: "Registration session expired",
+            });
+        }
+        const userData = JSON.parse(userDataString);
+        // Create verified user in database
+        const user = yield prisma.student.create({
+            data: Object.assign(Object.assign({}, userData), { isVerified: true }),
         });
+        // Delete temporary data from Redis
+        yield redis.del(`userData:${email}`);
         // Generate JWT Token
-        const token = jsonwebtoken_1.default.sign({ userId }, process.env.JWT_SECRET, {
+        const token = jsonwebtoken_1.default.sign({ userId: user.id }, process.env.JWT_SECRET, {
             expiresIn: "7d",
         });
-        return res
-            .status(200)
-            .json({ message: "OTP Verified, Account Activated", token });
+        return res.status(200).json({
+            message: "Email verified and account created successfully",
+            token,
+            user: {
+                id: user.id,
+                email: user.email,
+                username: user.username,
+                firstName: user.firstName,
+                lastName: user.lastName,
+            },
+        });
     }
     catch (error) {
+        console.error("OTP verification error:", error);
         return res.status(500).json({
-            message: "OTP verification failed",
+            message: "Verification failed",
             error: error.message,
         });
     }
 });
 exports.verifyOtpController = verifyOtpController;
-// 📌 **Signin (Email & Password Login)**
+// Step 3: Sign in
 const signin = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const { email, password } = req.body;
+        if (!email || !password) {
+            return res.status(400).json({
+                message: "Email and password are required",
+            });
+        }
         // Check if user exists
-        const user = yield prisma.student.findUnique({ where: { email } });
+        const user = yield prisma.student.findUnique({
+            where: { email },
+        });
         if (!user) {
-            return res.status(404).json({ message: "User not found" });
+            return res.status(404).json({
+                message: "User not found",
+            });
         }
         if (!user.isVerified) {
-            return res
-                .status(403)
-                .json({ message: "Account not verified. Please verify OTP." });
+            return res.status(403).json({
+                message: "Please verify your email first",
+                userId: user.id,
+            });
         }
         // Compare password
         const isMatch = yield bcrypt_1.default.compare(password, user.password);
         if (!isMatch) {
-            return res.status(401).json({ message: "Invalid credentials" });
+            return res.status(401).json({
+                message: "Invalid credentials",
+            });
         }
         // Generate JWT Token
         const token = jsonwebtoken_1.default.sign({ userId: user.id }, process.env.JWT_SECRET, {
             expiresIn: "7d",
         });
-        return res.status(200).json({ message: "Signin successful", token });
-    }
-    catch (error) {
-        return res
-            .status(500)
-            .json({ message: "Signin failed", error: error.message });
-    }
-});
-exports.signin = signin;
-const resendOtp = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    const { email } = req.body;
-    try {
-        const user = yield prisma.student.findUnique({ where: { email } });
-        if (!user) {
-            return res.status(404).json({ message: "User not found" });
-        }
-        const otp = yield (0, otp_1.generateOtp)(user.id);
-        // Send OTP via email
-        yield (0, email_1.sendEmail)(email, "Your OTP Code", `Your OTP is: ${otp}`);
-        return res.status(201).json({
-            message: "User created. Please verify OTP sent to your email.",
-            userId: user.id,
+        // Update online status
+        yield prisma.student.update({
+            where: { id: user.id },
+            data: { isOnline: true },
+        });
+        return res.status(200).json({
+            message: "Signin successful",
+            token,
+            user: {
+                id: user.id,
+                email: user.email,
+                username: user.username,
+                firstName: user.firstName,
+                lastName: user.lastName,
+            },
         });
     }
     catch (error) {
+        console.error("Signin error:", error);
         return res.status(500).json({
-            message: "Signup failed",
+            message: "Signin failed",
+            error: error.message,
+        });
+    }
+});
+exports.signin = signin;
+// Resend OTP
+const resendOtp = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    try {
+        const { email } = req.body;
+        if (!email) {
+            return res.status(400).json({
+                message: "Email is required",
+            });
+        }
+        // Check if we have userData in Redis (meaning they started signup)
+        const userDataString = yield redis.get(`userData:${email}`);
+        if (!userDataString) {
+            return res.status(404).json({
+                message: "No pending registration found for this email",
+            });
+        }
+        // Generate and send new OTP
+        const otp = yield (0, otp_1.generateOtp)(email);
+        yield (0, email_1.sendEmail)(email, "Your New Verification Code", `Your new verification code is: ${otp}`);
+        return res.status(200).json({
+            message: "New OTP sent successfully",
+        });
+    }
+    catch (error) {
+        console.error("Resend OTP error:", error);
+        return res.status(500).json({
+            message: "Failed to resend OTP",
             error: error.message,
         });
     }
 });
 exports.resendOtp = resendOtp;
+// Initiate forgot password process
+const forgotPassword = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    try {
+        const { email } = req.body;
+        if (!email) {
+            return res.status(400).json({
+                message: "Email is required",
+            });
+        }
+        // Check if user exists
+        const user = yield prisma.student.findUnique({
+            where: { email },
+        });
+        if (!user) {
+            return res.status(404).json({
+                message: "No account found with this email",
+            });
+        }
+        // Generate and send OTP
+        const otp = yield (0, otp_1.generateOtp)(email);
+        yield (0, email_1.sendEmail)(email, "Password Reset Request", `Your password reset code is: ${otp}`);
+        return res.status(200).json({
+            message: "Password reset code sent to your email",
+        });
+    }
+    catch (error) {
+        console.error("Forgot password error:", error);
+        return res.status(500).json({
+            message: "Failed to process request",
+            error: error.message,
+        });
+    }
+});
+exports.forgotPassword = forgotPassword;
+// Verify reset OTP
+const verifyResetOtp = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    try {
+        const { email, otp } = req.body;
+        if (!email || !otp) {
+            return res.status(400).json({
+                message: "Email and OTP are required",
+            });
+        }
+        const isValid = yield (0, otp_1.verifyOtp)(email, otp);
+        if (!isValid) {
+            return res.status(400).json({
+                message: "Invalid or expired OTP",
+            });
+        }
+        // Generate a temporary reset token
+        const resetToken = jsonwebtoken_1.default.sign({ email, purpose: "reset" }, process.env.JWT_SECRET, { expiresIn: "5m" });
+        return res.status(200).json({
+            message: "OTP verified successfully",
+            resetToken,
+        });
+    }
+    catch (error) {
+        console.error("Verify reset OTP error:", error);
+        return res.status(500).json({
+            message: "Failed to verify OTP",
+            error: error.message,
+        });
+    }
+});
+exports.verifyResetOtp = verifyResetOtp;
+// Reset password
+const resetPassword = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    try {
+        const { email, resetToken, newPassword } = req.body;
+        if (!email || !resetToken || !newPassword) {
+            return res.status(400).json({
+                message: "All fields are required",
+            });
+        }
+        // Verify reset token
+        try {
+            const decoded = jsonwebtoken_1.default.verify(resetToken, process.env.JWT_SECRET);
+            if (decoded.email !== email || decoded.purpose !== "reset") {
+                return res.status(401).json({
+                    message: "Invalid reset token",
+                });
+            }
+        }
+        catch (err) {
+            return res.status(401).json({
+                message: "Reset session expired",
+            });
+        }
+        // Update password
+        const hashedPassword = yield bcrypt_1.default.hash(newPassword, 10);
+        yield prisma.student.update({
+            where: { email },
+            data: { password: hashedPassword },
+        });
+        return res.status(200).json({
+            message: "Password updated successfully",
+        });
+    }
+    catch (error) {
+        console.error("Reset password error:", error);
+        return res.status(500).json({
+            message: "Failed to reset password",
+            error: error.message,
+        });
+    }
+});
+exports.resetPassword = resetPassword;

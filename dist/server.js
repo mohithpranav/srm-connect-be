@@ -16,7 +16,10 @@ const app = (0, express_1.default)();
 const server = http_1.default.createServer(app);
 // Middleware
 app.use(express_1.default.json());
-app.use((0, cors_1.default)());
+app.use((0, cors_1.default)({
+    origin: "http://localhost:5173", // or your frontend URL
+    credentials: true,
+}));
 app.use((0, helmet_1.default)());
 app.use((0, morgan_1.default)("dev"));
 app.use("/api", authRoutes_1.default);

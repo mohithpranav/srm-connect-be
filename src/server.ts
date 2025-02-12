@@ -13,7 +13,12 @@ const server = http.createServer(app);
 
 // Middleware
 app.use(express.json());
-app.use(cors());
+app.use(
+  cors({
+    origin: "http://localhost:5173", // or your frontend URL
+    credentials: true,
+  })
+);
 app.use(helmet());
 app.use(morgan("dev"));
 
