@@ -1,5 +1,6 @@
 import { PrismaClient } from "@prisma/client";
 import { Request, Response } from "express";
+import { uploadToCloudinary } from "../utils/cloudinary";
 
 const prisma = new PrismaClient();
 
@@ -18,6 +19,7 @@ const setUpProfile = async (req: Request, res: Response): Promise<any> => {
       year,
       state,
       skills,
+      interests,
       profilePic,
       language,
       linkedinUrl,
@@ -47,6 +49,7 @@ const setUpProfile = async (req: Request, res: Response): Promise<any> => {
         state,
         profilePic: profilePic || "",
         skills: skills || [],
+        interests: interests || [],
         language: language || [],
         linkedinUrl: linkedinUrl || "",
         githubUrl: githubUrl || "",
@@ -81,6 +84,7 @@ const editStudentProfile = async (
       year,
       state,
       skills,
+      interests,
       profilePic,
       language,
       linkedinUrl,
@@ -94,18 +98,37 @@ const editStudentProfile = async (
       return res.status(404).json({ message: "Student not found" });
     }
 
-    // Update only the provided fields
-    const updateData: any = {};
-    if (firstName) updateData.firstName = firstName;
-    if (lastName) updateData.lastName = lastName;
-    if (branch) updateData.branch = branch;
-    if (year) updateData.year = year;
-    if (state) updateData.state = state;
-    if (skills) updateData.skills = skills;
-    if (profilePic) updateData.profilePic = profilePic;
-    if (language) updateData.language = language;
-    if (linkedinUrl) updateData.linkedinUrl = linkedinUrl;
-    if (githubUrl) updateData.githubUrl = githubUrl;
+    // Handle profile picture upload if it's a base64 string
+    let uploadedProfilePic = profilePic;
+    if (profilePic && profilePic.startsWith("data:image")) {
+      uploadedProfilePic = await uploadToCloudinary(profilePic);
+    }
+
+    // Explicitly handle arrays to ensure they're not undefined
+    const updateData: UpdateData = {
+      firstName: firstName || undefined,
+      lastName: lastName || undefined,
+      branch: branch || undefined,
+      year: year ? parseInt(year.toString()) : undefined,
+      state: state || undefined,
+      skills: Array.isArray(skills) ? skills : existingStudent.skills,
+      interests: Array.isArray(interests)
+        ? interests
+        : existingStudent.interests,
+      language: Array.isArray(language) ? language : existingStudent.language,
+      profilePic: uploadedProfilePic || undefined,
+      linkedinUrl: linkedinUrl || undefined,
+      githubUrl: githubUrl || undefined,
+    };
+
+    // Use type assertion when deleting undefined values
+    Object.keys(updateData).forEach(
+      (key) =>
+        updateData[key as keyof UpdateData] === undefined &&
+        delete updateData[key as keyof UpdateData]
+    );
+
+    console.log("Update data:", updateData);
 
     const updatedStudent = await prisma.student.update({
       where: { id },
@@ -121,33 +144,44 @@ const editStudentProfile = async (
     res.status(500).json({ message: "Internal Server Error" });
   }
 };
+
 const getAllStudents = async (req: Request, res: Response): Promise<any> => {
   try {
+    console.log("Getting all students - Auth User:", req.user);
+
     const students = await prisma.student.findMany({
       select: {
+        id: true,
         firstName: true,
         lastName: true,
+        email: true,
         branch: true,
         year: true,
         state: true,
         skills: true,
         interests: true,
+        profilePic: true,
+        language: true,
+        linkedinUrl: true,
+        githubUrl: true,
       },
     });
+
+    console.log("Found students:", students.length);
 
     res.status(200).json({
       message: "Students retrieved successfully",
       students,
     });
   } catch (error) {
-    console.error("Error fetching students:", error);
+    console.error("Error in getAllStudents:", error);
     res.status(500).json({ message: "Internal Server Error" });
   }
 };
 
 const getStudentProfile = async (req: Request, res: Response): Promise<any> => {
   try {
-    const { id } = req.body;
+    const { id } = req.params;
 
     if (!id) {
       return res.status(400).json({ message: "Student ID is required" });
@@ -185,6 +219,21 @@ const getStudentProfile = async (req: Request, res: Response): Promise<any> => {
     console.error("Error fetching student profile:", error);
     res.status(500).json({ message: "Internal Server Error" });
   }
+};
+
+// Add type for updateData
+type UpdateData = {
+  firstName?: string;
+  lastName?: string;
+  branch?: string;
+  year?: number;
+  state?: string;
+  skills: string[];
+  interests: string[];
+  language: string[];
+  profilePic?: string;
+  linkedinUrl?: string;
+  githubUrl?: string;
 };
 
 export { setUpProfile, editStudentProfile, getAllStudents, getStudentProfile };

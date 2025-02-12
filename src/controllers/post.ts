@@ -123,7 +123,20 @@ const getMyPosts = async (req: Request, res: Response): Promise<any> => {
 const getAllPosts = async (req: Request, res: Response): Promise<any> => {
   try {
     const posts = await prisma.post.findMany({
-      orderBy: { createdAt: "desc" }, // Sort newest to oldest
+      include: {
+        student: {
+          select: {
+            id: true,
+            username: true,
+            firstName: true,
+            lastName: true,
+            profilePic: true,
+            branch: true,
+            year: true,
+          },
+        },
+      },
+      orderBy: { createdAt: "desc" },
     });
     res.status(200).json(posts);
   } catch (error) {

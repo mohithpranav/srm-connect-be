@@ -12,10 +12,17 @@ const redis = new Redis();
 // Step 1: Store user data in Redis and send OTP
 const initiateSignup = async (req: Request, res: Response): Promise<any> => {
   try {
-    const { firstName, lastName, email, password, username } = req.body;
+    const { email, password, firstName, lastName, username, gender } = req.body;
 
     // Validate required fields
-    if (!firstName || !lastName || !email || !password || !username) {
+    if (
+      !firstName ||
+      !lastName ||
+      !email ||
+      !password ||
+      !username ||
+      !gender
+    ) {
       return res.status(400).json({
         message: "All fields are required",
       });
@@ -46,6 +53,7 @@ const initiateSignup = async (req: Request, res: Response): Promise<any> => {
       email,
       username,
       password: hashedPassword,
+      gender,
     };
 
     await redis.set(`userData:${email}`, JSON.stringify(userData), "EX", 600);
@@ -57,6 +65,18 @@ const initiateSignup = async (req: Request, res: Response): Promise<any> => {
       "Verify Your Email",
       `Welcome to SRM Connect! Your verification code is: ${otp}`
     );
+
+    const student = await prisma.student.create({
+      data: {
+        email,
+        password: hashedPassword,
+        firstName,
+        lastName,
+        username,
+        gender,
+        otp: otp,
+      },
+    });
 
     return res.status(201).json({
       message: "Please verify your email to complete signup",
@@ -93,26 +113,11 @@ const verifyOtpController = async (
       });
     }
 
-    // Get stored user data from Redis
-    const userDataString = await redis.get(`userData:${email}`);
-    if (!userDataString) {
-      return res.status(400).json({
-        message: "Registration session expired",
-      });
-    }
-
-    const userData = JSON.parse(userDataString);
-
-    // Create verified user in database
-    const user = await prisma.student.create({
-      data: {
-        ...userData,
-        isVerified: true,
-      },
+    // Find and update the existing user instead of creating a new one
+    const user = await prisma.student.update({
+      where: { email },
+      data: { isVerified: true },
     });
-
-    // Delete temporary data from Redis
-    await redis.del(`userData:${email}`);
 
     // Generate JWT Token
     const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET!, {
@@ -120,7 +125,7 @@ const verifyOtpController = async (
     });
 
     return res.status(200).json({
-      message: "Email verified and account created successfully",
+      message: "Email verified successfully",
       token,
       user: {
         id: user.id,
@@ -128,6 +133,7 @@ const verifyOtpController = async (
         username: user.username,
         firstName: user.firstName,
         lastName: user.lastName,
+        gender: user.gender,
       },
     });
   } catch (error) {
@@ -196,6 +202,7 @@ const signin = async (req: Request, res: Response): Promise<any> => {
         username: user.username,
         firstName: user.firstName,
         lastName: user.lastName,
+        gender: user.gender,
       },
     });
   } catch (error) {

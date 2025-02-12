@@ -24,9 +24,14 @@ const redis = new ioredis_1.default();
 // Step 1: Store user data in Redis and send OTP
 const initiateSignup = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
-        const { firstName, lastName, email, password, username } = req.body;
+        const { email, password, firstName, lastName, username, gender } = req.body;
         // Validate required fields
-        if (!firstName || !lastName || !email || !password || !username) {
+        if (!firstName ||
+            !lastName ||
+            !email ||
+            !password ||
+            !username ||
+            !gender) {
             return res.status(400).json({
                 message: "All fields are required",
             });
@@ -52,11 +57,23 @@ const initiateSignup = (req, res) => __awaiter(void 0, void 0, void 0, function*
             email,
             username,
             password: hashedPassword,
+            gender,
         };
         yield redis.set(`userData:${email}`, JSON.stringify(userData), "EX", 600);
         // Generate and send OTP
         const otp = yield (0, otp_1.generateOtp)(email);
         yield (0, email_1.sendEmail)(email, "Verify Your Email", `Welcome to SRM Connect! Your verification code is: ${otp}`);
+        const student = yield prisma.student.create({
+            data: {
+                email,
+                password: hashedPassword,
+                firstName,
+                lastName,
+                username,
+                gender,
+                otp: otp,
+            },
+        });
         return res.status(201).json({
             message: "Please verify your email to complete signup",
             email,
@@ -87,26 +104,17 @@ const verifyOtpController = (req, res) => __awaiter(void 0, void 0, void 0, func
                 message: "Invalid or expired OTP",
             });
         }
-        // Get stored user data from Redis
-        const userDataString = yield redis.get(`userData:${email}`);
-        if (!userDataString) {
-            return res.status(400).json({
-                message: "Registration session expired",
-            });
-        }
-        const userData = JSON.parse(userDataString);
-        // Create verified user in database
-        const user = yield prisma.student.create({
-            data: Object.assign(Object.assign({}, userData), { isVerified: true }),
+        // Find and update the existing user instead of creating a new one
+        const user = yield prisma.student.update({
+            where: { email },
+            data: { isVerified: true },
         });
-        // Delete temporary data from Redis
-        yield redis.del(`userData:${email}`);
         // Generate JWT Token
         const token = jsonwebtoken_1.default.sign({ userId: user.id }, process.env.JWT_SECRET, {
             expiresIn: "7d",
         });
         return res.status(200).json({
-            message: "Email verified and account created successfully",
+            message: "Email verified successfully",
             token,
             user: {
                 id: user.id,
@@ -114,6 +122,7 @@ const verifyOtpController = (req, res) => __awaiter(void 0, void 0, void 0, func
                 username: user.username,
                 firstName: user.firstName,
                 lastName: user.lastName,
+                gender: user.gender,
             },
         });
     }
@@ -175,6 +184,7 @@ const signin = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
                 username: user.username,
                 firstName: user.firstName,
                 lastName: user.lastName,
+                gender: user.gender,
             },
         });
     }

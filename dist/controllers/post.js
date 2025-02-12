@@ -116,7 +116,20 @@ exports.getMyPosts = getMyPosts;
 const getAllPosts = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const posts = yield prisma.post.findMany({
-            orderBy: { createdAt: "desc" }, // Sort newest to oldest
+            include: {
+                student: {
+                    select: {
+                        id: true,
+                        username: true,
+                        firstName: true,
+                        lastName: true,
+                        profilePic: true,
+                        branch: true,
+                        year: true,
+                    },
+                },
+            },
+            orderBy: { createdAt: "desc" },
         });
         res.status(200).json(posts);
     }

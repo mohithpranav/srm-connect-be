@@ -21,6 +21,7 @@ model Student {
   lastName         String?
   password         String
   createdAt        DateTime         @default(now())
+  gender           String?
   profilePic       String?
   branch           String?
   year             Int?

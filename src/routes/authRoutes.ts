@@ -43,7 +43,7 @@ router.post("/reset-password", resetPassword);
 router.post("/setUpProfile", auth, setUpProfile);
 router.put("/editStudentProfile", auth, editStudentProfile);
 router.get("/getAllStudents", auth, getAllStudents);
-router.get("/getStudentProfile", auth, getStudentProfile);
+router.get("/getStudentProfile/:id", auth, getStudentProfile);
 
 // ✅ Create a new route for creating posts
 router.post("/createPost", auth, createPost);

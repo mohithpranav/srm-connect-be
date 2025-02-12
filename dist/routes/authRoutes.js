@@ -23,7 +23,7 @@ router.post("/reset-password", auth_controller_1.resetPassword);
 router.post("/setUpProfile", auth_middleware_1.auth, student_1.setUpProfile);
 router.put("/editStudentProfile", auth_middleware_1.auth, student_1.editStudentProfile);
 router.get("/getAllStudents", auth_middleware_1.auth, student_1.getAllStudents);
-router.get("/getStudentProfile", auth_middleware_1.auth, student_1.getStudentProfile);
+router.get("/getStudentProfile/:id", auth_middleware_1.auth, student_1.getStudentProfile);
 // ✅ Create a new route for creating posts
 router.post("/createPost", auth_middleware_1.auth, post_1.createPost);
 router.put("/editPost", auth_middleware_1.auth, post_1.editPost);
