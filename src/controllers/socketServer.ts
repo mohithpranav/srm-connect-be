@@ -16,7 +16,6 @@ const initializeSocketServer = (server: HttpServer) => {
   wss.on("connection", (ws: CustomWebSocket) => {
     console.log("🔌 New client connected");
 
-    // Add ping-pong to keep connection alive
     ws.isAlive = true;
     ws.on("pong", () => {
       ws.isAlive = true;
@@ -24,12 +23,20 @@ const initializeSocketServer = (server: HttpServer) => {
 
     ws.on("message", async (message: string) => {
       try {
-        const data = JSON.parse(message.toString());
-        console.log("📥 Received:", data);
+        const data = JSON.parse(message);
+        console.log("📩 Received message:", data);
 
         switch (data.type) {
           case "user-online":
-            await handleUserOnline(ws, data.userId);
+            ws.userId = data.userId;
+            onlineUsers.set(data.userId, ws);
+            await handleUserOnline(data.userId);
+            ws.send(
+              JSON.stringify({
+                type: "connection-success",
+                userId: data.userId,
+              })
+            );
             break;
 
           case "send-message":
@@ -54,7 +61,10 @@ const initializeSocketServer = (server: HttpServer) => {
       } catch (error) {
         console.error("❌ Error processing message:", error);
         ws.send(
-          JSON.stringify({ type: "error", message: "Invalid message format" })
+          JSON.stringify({
+            type: "error",
+            message: "Failed to process message",
+          })
         );
       }
     });
@@ -88,15 +98,9 @@ const initializeSocketServer = (server: HttpServer) => {
   });
 };
 
-async function handleUserOnline(ws: CustomWebSocket, userId: number) {
+async function handleUserOnline(userId: number) {
   try {
     console.log(`👤 User ${userId} coming online`);
-
-    // Store the WebSocket connection with the userId
-    onlineUsers.set(userId, ws);
-
-    // Store userId in WebSocket instance for easy reference
-    ws.userId = userId;
 
     await prisma.student.update({
       where: { id: userId },
@@ -105,14 +109,6 @@ async function handleUserOnline(ws: CustomWebSocket, userId: number) {
 
     broadcastUserStatus(userId, true);
     console.log("📊 Current online users:", Array.from(onlineUsers.keys()));
-
-    // Send confirmation to the user
-    ws.send(
-      JSON.stringify({
-        type: "connection-success",
-        userId: userId,
-      })
-    );
   } catch (error) {
     console.error("❌ Error in handleUserOnline:", error);
   }
@@ -121,146 +117,91 @@ async function handleUserOnline(ws: CustomWebSocket, userId: number) {
 async function handleSendMessage(ws: CustomWebSocket, data: any) {
   try {
     const { senderId, receiverId, content } = data;
-    console.log(`📨 Processing message from ${senderId} to ${receiverId}`);
+    console.log(
+      `📨 Processing message from ${senderId} to ${receiverId}:`,
+      content
+    );
 
-    // Verify both users exist
-    const [sender, receiver] = await Promise.all([
-      prisma.student.findUnique({ where: { id: senderId } }),
-      prisma.student.findUnique({ where: { id: receiverId } }),
-    ]);
+    // First, save message to database
+    const message = await prisma.message.create({
+      data: {
+        content,
+        senderId,
+        receiverId,
+        isRead: false,
+      },
+      include: {
+        sender: {
+          select: {
+            firstName: true,
+            lastName: true,
+            profilePic: true,
+          },
+        },
+      },
+    });
 
-    if (!sender || !receiver) {
-      ws.send(
-        JSON.stringify({
-          type: "error",
-          message: !sender ? "Sender not found" : "Receiver not found",
-        })
-      );
-      return;
-    }
-
-    // Verify connection exists
+    // Update connection with the new message
     const connection = await prisma.connection.findFirst({
       where: {
         OR: [
           { requesterId: senderId, recipientId: receiverId },
           { requesterId: receiverId, recipientId: senderId },
         ],
-        status: "ACCEPTED",
       },
     });
 
-    if (!connection) {
-      ws.send(
-        JSON.stringify({
-          type: "error",
-          message: "No active connection found",
-        })
-      );
-      return;
+    if (connection) {
+      await prisma.connection.update({
+        where: { id: connection.id },
+        data: {
+          messages: {
+            connect: { id: message.id },
+          },
+        },
+      });
     }
 
-    // Save message and update notification in a transaction
-    const [message, notification] = await prisma.$transaction(
-      async (prisma) => {
-        // Create message
-        const message = await prisma.message.create({
-          data: {
-            senderId,
-            receiverId,
-            content,
-            connectionId: connection.id,
-          },
-          include: {
-            sender: {
-              select: {
-                username: true,
-                profilePic: true,
-              },
-            },
-          },
-        });
-
-        // Update or create notification
-        const notification = await prisma.notification.upsert({
-          where: {
-            studentId_senderId: {
-              studentId: receiverId,
-              senderId: senderId,
-            },
-          },
-          update: {
-            count: { increment: 1 },
-            lastMessage: new Date(),
-          },
-          create: {
-            studentId: receiverId,
-            senderId: senderId,
-            count: 1,
-            lastMessage: new Date(),
-          },
-        });
-
-        return [message, notification];
-      }
-    );
-
-    // Prepare message payload
-    const messagePayload = JSON.stringify({
-      type: "new-message",
-      message: {
-        ...message,
-        timestamp: new Date().toISOString(),
-      },
-    });
-
-    // Send to sender (confirmation)
+    // Send confirmation to sender
     ws.send(
       JSON.stringify({
         type: "message-sent",
-        message: {
-          ...message,
-          timestamp: new Date().toISOString(),
-        },
+        message,
       })
     );
-    console.log(`✅ Message sent confirmation to sender ${senderId}`);
 
-    // Send to receiver if online
+    // Check if receiver is online
     const receiverWs = onlineUsers.get(receiverId);
-    if (receiverWs && receiverWs.readyState === WebSocket.OPEN) {
-      try {
-        // Send new message to receiver
-        receiverWs.send(messagePayload);
-        console.log(`✅ Message delivered to receiver ${receiverId}`);
-
-        // Send notification update
-        receiverWs.send(
-          JSON.stringify({
-            type: "notification-update",
-            notification: {
-              senderId,
-              count: notification.count,
-              lastMessage: new Date().toISOString(),
-            },
-          })
-        );
-        console.log(`✅ Notification sent to receiver ${receiverId}`);
-      } catch (error) {
-        console.error(`❌ Error sending to receiver ${receiverId}:`, error);
-        onlineUsers.delete(receiverId);
-      }
-    } else {
-      console.log(
-        `ℹ️ Receiver ${receiverId} is offline or connection is closed`
+    if (receiverWs?.readyState === WebSocket.OPEN) {
+      console.log("📤 Sending message to online receiver:", receiverId);
+      receiverWs.send(
+        JSON.stringify({
+          type: "new-message",
+          message,
+        })
       );
+    } else {
+      console.log("📥 Receiver is offline, message saved to DB:", receiverId);
+      // Optionally increment unread count or create notification
+      await prisma.notification.upsert({
+        where: {
+          studentId_senderId: {
+            studentId: receiverId,
+            senderId: senderId,
+          },
+        },
+        update: {
+          count: {
+            increment: 1,
+          },
+        },
+        create: {
+          studentId: receiverId,
+          senderId: senderId,
+          count: 1,
+        },
+      });
     }
-
-    // Log the message delivery status
-    console.log(`📊 Message delivery status:
-      Sender (${senderId}): ✅ Delivered
-      Receiver (${receiverId}): ${receiverWs ? "✅ Delivered" : "❌ Offline"}
-    `);
   } catch (error) {
     console.error("❌ Error in handleSendMessage:", error);
     ws.send(
@@ -313,57 +254,78 @@ async function handleFetchChatHistory(ws: CustomWebSocket, data: any) {
   }
 }
 
-async function handleMarkMessagesRead(data: any) {
+async function handleMarkMessagesRead(data: {
+  userId: number;
+  senderId: number;
+}) {
   try {
-    const { userId, senderId } = data;
-
-    // Update messages and clear notifications in a transaction
-    await prisma.$transaction(async (prisma) => {
-      // Mark messages as read
-      await prisma.message.updateMany({
-        where: {
-          receiverId: userId,
-          senderId: senderId,
-          isRead: false,
-        },
-        data: {
-          isRead: true,
-          readAt: new Date(),
-        },
-      });
-
-      // Clear notification for this sender
-      await prisma.notification.deleteMany({
-        where: {
-          studentId: userId,
-          senderId: senderId,
-        },
-      });
+    // Mark messages as read
+    await prisma.message.updateMany({
+      where: {
+        senderId: data.senderId,
+        receiverId: data.userId,
+        isRead: false,
+      },
+      data: {
+        isRead: true,
+        readAt: new Date(),
+      },
     });
 
-    // Notify the reader about cleared notifications
-    const readerWs = onlineUsers.get(userId);
-    if (readerWs) {
-      readerWs.send(
-        JSON.stringify({
-          type: "notifications-cleared",
-          senderId,
-        })
-      );
-    }
+    // Reset notification count
+    await prisma.notification.update({
+      where: {
+        studentId_senderId: {
+          studentId: data.userId,
+          senderId: data.senderId,
+        },
+      },
+      data: {
+        count: 0,
+      },
+    });
 
-    // Notify the sender that messages were read
-    const senderWs = onlineUsers.get(senderId);
-    if (senderWs) {
-      senderWs.send(
+    // Send updated notification count to user
+    const userWs = onlineUsers.get(data.userId);
+    if (userWs) {
+      const notifications = await getUnreadNotifications(data.userId);
+      userWs.send(
         JSON.stringify({
-          type: "messages-read",
-          by: userId,
+          type: "notifications-update",
+          notifications,
         })
       );
     }
   } catch (error) {
-    console.error("❌ Error in handleMarkMessagesRead:", error);
+    console.error("❌ Error marking messages as read:", error);
+  }
+}
+
+// Add function to get unread notifications
+async function getUnreadNotifications(userId: number) {
+  try {
+    const notifications = await prisma.notification.findMany({
+      where: {
+        studentId: userId,
+        count: {
+          gt: 0,
+        },
+      },
+      include: {
+        student: {
+          select: {
+            firstName: true,
+            lastName: true,
+            profilePic: true,
+          },
+        },
+      },
+    });
+
+    return notifications;
+  } catch (error) {
+    console.error("❌ Error fetching notifications:", error);
+    return [];
   }
 }
 
