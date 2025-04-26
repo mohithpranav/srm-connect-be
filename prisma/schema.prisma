@@ -23,6 +23,7 @@ model Student {
   createdAt        DateTime         @default(now())
   gender           String?
   profilePic       String?
+  bio             String?
   branch           String?
   year             Int?
   state            String?
@@ -39,7 +40,7 @@ model Student {
   connection       Connection[]     @relation("RequesterConnections")
   sentConnection   Connection[]     @relation("RecipientConnections")
   sentMessage      Message[]        @relation("SenderMessages")
-  receivedMessage  Message[]        @relation("ReceiverMessages")
+  receivedMessage  Message[]        @relation("ReceiverMessages") 
   notifications    Notification[]
 }
 
@@ -94,8 +95,8 @@ model Message {
   readAt           DateTime?
   senderId         Int
   receiverId       Int
-  sender           Student   @relation("SenderMessages", fields: [senderId], references: [id])
-  receiver         Student   @relation("ReceiverMessages", fields: [receiverId], references: [id])
+  sender           Student   @relation("SenderMessages", fields: [senderId], references: [id], onDelete: Cascade)
+  receiver         Student   @relation("ReceiverMessages", fields: [receiverId], references: [id] , onDelete: Cascade)
   connectionId     Int?
   connectionMessage Connection? @relation(fields: [connectionId], references: [id])
 }
@@ -106,7 +107,7 @@ model Notification {
   senderId    Int      // Sender's ID
   count       Int      @default(0)
   lastMessage DateTime @default(now())
-  student     Student  @relation(fields: [studentId], references: [id])
+  student     Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
 
   @@unique([studentId, senderId])
 }
