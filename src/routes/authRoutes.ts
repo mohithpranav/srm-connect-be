@@ -28,9 +28,12 @@ import {
 } from "../controllers/connection";
 import { getChat } from "../controllers/getChat";
 import { auth } from "../middleware/auth.middleware";
+import profile from "../controllers/profile";
 const router = express.Router(); // ✅ Use `Router()` instead of `express()`
 
 // Public routes (no auth required)
+router.post("/create_profile", profile); 
+
 router.post("/signup", initiateSignup);
 router.post("/verifyOtpController", verifyOtpController);
 router.post("/resendOtp", resendOtp);

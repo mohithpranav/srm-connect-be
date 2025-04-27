@@ -19,7 +19,9 @@ const setUpProfile = (req, res) => __awaiter(void 0, void 0, void 0, function* (
         if (!id) {
             return res.status(400).json({ message: "Student ID is required" });
         }
-        const { firstName, lastName, branch, bio, year, state, skills, interests, profilePic, language, linkedinUrl, githubUrl, } = req.body;
+        const { firstName, lastName, branch, 
+        // bio,
+        year, state, skills, interests, profilePic, language, linkedinUrl, githubUrl, s } = req.body;
         // Validate required fields
         if (!firstName || !lastName || !branch || !year || !state || !language) {
             return res.status(400).json({ message: "Missing required fields" });
@@ -37,7 +39,7 @@ const setUpProfile = (req, res) => __awaiter(void 0, void 0, void 0, function* (
                 lastName,
                 branch,
                 year,
-                bio,
+                // bio,
                 state,
                 profilePic: profilePic || "",
                 skills: skills || [],
@@ -64,7 +66,9 @@ const editStudentProfile = (req, res) => __awaiter(void 0, void 0, void 0, funct
         if (!id) {
             return res.status(400).json({ message: "Student ID is required" });
         }
-        const { firstName, lastName, branch, year, bio, state, skills, interests, profilePic, language, linkedinUrl, githubUrl, } = req.body;
+        const { firstName, lastName, branch, year, 
+        // bio,
+        state, skills, interests, profilePic, language, linkedinUrl, githubUrl, } = req.body;
         // Check if student exists
         const existingStudent = yield prisma.student.findUnique({ where: { id } });
         if (!existingStudent) {
@@ -87,7 +91,7 @@ const editStudentProfile = (req, res) => __awaiter(void 0, void 0, void 0, funct
                 ? interests
                 : existingStudent.interests,
             language: Array.isArray(language) ? language : existingStudent.language,
-            bio: bio || undefined,
+            // bio: bio || undefined,
             profilePic: uploadedProfilePic || undefined,
             linkedinUrl: linkedinUrl || undefined,
             githubUrl: githubUrl || undefined,
@@ -123,7 +127,7 @@ const getAllStudents = (req, res) => __awaiter(void 0, void 0, void 0, function*
                 branch: true,
                 year: true,
                 state: true,
-                bio: true,
+                // bio: true,
                 skills: true,
                 interests: true,
                 profilePic: true,
@@ -159,7 +163,7 @@ const getStudentProfile = (req, res) => __awaiter(void 0, void 0, void 0, functi
                 branch: true,
                 year: true,
                 state: true,
-                bio: true,
+                // bio: true,
                 skills: true,
                 interests: true,
                 language: true,

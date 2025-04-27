@@ -10,8 +10,10 @@ const student_1 = require("../controllers/student");
 const connection_1 = require("../controllers/connection");
 const getChat_1 = require("../controllers/getChat");
 const auth_middleware_1 = require("../middleware/auth.middleware");
+const profile_1 = __importDefault(require("../controllers/profile"));
 const router = express_1.default.Router(); // ✅ Use `Router()` instead of `express()`
 // Public routes (no auth required)
+router.post("/create_profile", profile_1.default);
 router.post("/signup", auth_controller_1.initiateSignup);
 router.post("/verifyOtpController", auth_controller_1.verifyOtpController);
 router.post("/resendOtp", auth_controller_1.resendOtp);

@@ -23,7 +23,7 @@ model Student {
   createdAt        DateTime         @default(now())
   gender           String?
   profilePic       String?
-  bio             String?
+  bio              String?
   branch           String?
   year             Int?
   state            String?
