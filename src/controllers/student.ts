@@ -16,7 +16,7 @@ const setUpProfile = async (req: Request, res: Response): Promise<any> => {
       firstName,
       lastName,
       branch,
-      bio,
+      // bio,
       year,
       state,
       skills,
@@ -24,7 +24,7 @@ const setUpProfile = async (req: Request, res: Response): Promise<any> => {
       profilePic,
       language,
       linkedinUrl,
-      githubUrl,
+      githubUrl,s
     } = req.body;
 
     // Validate required fields
@@ -47,7 +47,7 @@ const setUpProfile = async (req: Request, res: Response): Promise<any> => {
         lastName,
         branch,
         year,
-        bio,
+        // bio,
         state,
         profilePic: profilePic || "",
         skills: skills || [],
@@ -84,7 +84,7 @@ const editStudentProfile = async (
       lastName,
       branch,
       year,
-      bio,
+      // bio,
       state,
       skills,
       interests,
@@ -119,7 +119,7 @@ const editStudentProfile = async (
         ? interests
         : existingStudent.interests,
       language: Array.isArray(language) ? language : existingStudent.language,
-      bio: bio || undefined,
+      // bio: bio || undefined,
       profilePic: uploadedProfilePic || undefined,
       linkedinUrl: linkedinUrl || undefined,
       githubUrl: githubUrl || undefined,
@@ -162,7 +162,7 @@ const getAllStudents = async (req: Request, res: Response): Promise<any> => {
         branch: true,
         year: true,
         state: true,
-        bio: true,
+        // bio: true,
         skills: true,
         interests: true,
         profilePic: true,
@@ -201,7 +201,7 @@ const getStudentProfile = async (req: Request, res: Response): Promise<any> => {
         branch: true,
         year: true,
         state: true,
-        bio: true,
+        // bio: true,
         skills: true,
         interests: true,
         language: true,
@@ -233,7 +233,7 @@ type UpdateData = {
   lastName?: string;
   branch?: string;
   year?: number;
-  bio?: string; // Added bio field
+  // bio?: string; // Added bio field
   state?: string;
   skills: string[];
   interests: string[];
